@@ -153,11 +153,11 @@ fn cameraForFractal(fractal_type: fractals.FractalType, width: u32, height: u32)
             .aperture = 0.01,
         }),
         .kleinian => Camera.init(.{
-            .position = Vec3.init(0.3, 0.2, 0.8),
-            .look_at = Vec3.init(0.0, 0.0, 0.0),
-            .fov_degrees = 60.0,
+            .position = Vec3.init(1.3, 0.2, 1.5),
+            .look_at = Vec3.init(-1.0, -0.1, -1.0),
+            .fov_degrees = 65.0,
             .aspect = aspect,
-            .aperture = 0.005,
+            .aperture = 0.002,
         }),
         .ifs => Camera.init(.{
             .position = Vec3.init(1.2, 0.9, 1.6),
@@ -197,8 +197,7 @@ fn fractalParams(fractal_type: fractals.FractalType) fractals.FractalParams {
         },
         .kleinian => .{
             .fractal_type = .kleinian,
-            .max_iterations = 40,
-            .offset = Vec3.init(2.0, 0.5, 2.0),
+            .max_iterations = 15,
         },
         .ifs => .{
             .fractal_type = .ifs,
@@ -215,7 +214,7 @@ fn materialForFractal(fractal_type: fractals.FractalType) render.Material {
         .menger => .{ .roughness = 0.25, .metallic = 0.1, .ior = 1.6 },
         .sierpinski => .{ .roughness = 0.3, .metallic = 0.0, .ior = 1.5 },
         .julia => .{ .roughness = 0.4, .metallic = 0.0, .ior = 1.45 },
-        .kleinian => .{ .roughness = 0.2, .metallic = 0.0, .ior = 1.6, .emission = 0.5 },
+        .kleinian => .{ .roughness = 0.3, .metallic = 0.0, .ior = 1.6, .emission = 1.5 },
         .ifs => .{ .roughness = 0.3, .metallic = 0.05, .ior = 1.5 },
     };
 }

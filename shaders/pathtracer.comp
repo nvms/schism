@@ -72,6 +72,10 @@ struct SDFResult {
 // --- Fractal SDFs ---
 
 SDFResult sdf_mandelbulb(vec3 p) {
+    // seed-derived geometry perturbation
+    float twist = pc.color_phase1 * 0.15;
+    float fold_offset = (pc.color_phase2 - 3.14) * 0.1;
+
     vec3 z = p;
     float dr = 1.0;
     float r = 0.0;
@@ -88,10 +92,10 @@ SDFResult sdf_mandelbulb(vec3 p) {
         min_orbit = min(min_orbit, r);
 
         float theta = acos(clamp(z.z / r, -1.0, 1.0));
-        float phi = atan(z.y, z.x);
+        float phi = atan(z.y, z.x) + twist;
         dr = pow(r, pw - 1.0) * pw * dr + 1.0;
         float zr = pow(r, pw);
-        theta *= pw;
+        theta = theta * pw + fold_offset * sin(r * 2.0);
         phi *= pw;
         z = zr * vec3(sin(theta) * cos(phi), sin(phi) * sin(theta), cos(theta)) + p;
     }
@@ -170,27 +174,42 @@ SDFResult sdf_julia(vec3 p) {
 }
 
 SDFResult sdf_kleinian(vec3 p) {
+    // mandelbox variant with tight fold limit for rounder cavities
     vec3 z = p;
-    float de = 1.0;
-    vec3 box_size = vec3(pc.offset_x, pc.offset_y, pc.offset_z);
+    float dr = 1.0;
     float min_orbit = 1e10;
     vec3 trap = vec3(1e10);
     uint i = 0;
 
+    float fold = 0.85;
+    float min_r2 = 0.1;
+    float s = -2.0;
+
     for (; i < pc.max_iterations; i++) {
-        z.x -= box_size.x * round(z.x / box_size.x);
-        z.z -= box_size.z * round(z.z / box_size.z);
+        // box fold with small limit = rounder shapes
+        z = clamp(z, -fold, fold) * 2.0 - z;
 
         trap = min(trap, abs(z));
-        min_orbit = min(min_orbit, length(z));
 
+        // sphere fold
         float r2 = dot(z, z);
-        if (r2 < 0.001) break;
-        float k = max(1.0 / r2, 1.0);
-        z *= k;
-        de *= k;
+        min_orbit = min(min_orbit, sqrt(r2));
+
+        if (r2 < min_r2) {
+            float t = 1.0 / min_r2;
+            z *= t;
+            dr *= t;
+        } else if (r2 < 1.0) {
+            float t = 1.0 / r2;
+            z *= t;
+            dr *= t;
+        }
+
+        z = z * s + p;
+        dr = dr * abs(s) + 1.0;
     }
-    return SDFResult(length(z) / de, trap, min_orbit, i);
+
+    return SDFResult(length(z) / dr, trap, min_orbit, i);
 }
 
 SDFResult sdf_ifs(vec3 p) {
@@ -394,25 +413,46 @@ vec3 trace_path(vec3 ro, vec3 rd) {
             break;
         }
 
-        vec3 color = orbit_trap_color(hit.trap, hit.min_orbit, hit.iters);
+        vec3 color;
+        if (pc.fractal_type == 4) {
+            // kleinian: monochromatic warm palette based on depth
+            float d = clamp(hit.min_orbit * 1.5, 0.0, 1.0);
+            float it = clamp(float(hit.iters) / float(pc.max_iterations), 0.0, 1.0);
+            float t = d * 0.7 + it * 0.3;
+            color = mix(vec3(0.15, 0.04, 0.01), vec3(0.9, 0.5, 0.15), t);
+        } else {
+            color = orbit_trap_color(hit.trap, hit.min_orbit, hit.iters);
+        }
         float ao = ambient_occlusion(hit.pos, hit.normal);
 
-        vec3 L1 = normalize(vec3(0.6, 0.8, -0.3));
-        vec3 L2 = normalize(vec3(-0.5, 0.3, 0.7));
-        vec3 lc1 = vec3(1.2, 1.0, 0.8);
-        vec3 lc2 = vec3(0.3, 0.4, 0.6);
+        vec3 L1 = normalize(vec3(0.5, 0.9, -0.2));
+        vec3 lc1 = vec3(2.0, 1.6, 1.3);
+
+        vec3 L2 = normalize(vec3(-0.3, 0.1, 0.9));
+        vec3 lc2 = vec3(0.5, 0.6, 1.0);
+
+        vec3 L3 = normalize(vec3(0.1, -0.8, -0.3));
+        vec3 lc3 = vec3(0.3, 0.15, 0.05);
 
         vec3 shadow_origin = hit.pos + hit.normal * 0.002;
-        float s1 = soft_shadow(shadow_origin, L1, 12.0);
-        float s2 = soft_shadow(shadow_origin, L2, 12.0);
+        float s1 = soft_shadow(shadow_origin, L1, 16.0);
+        float s2 = soft_shadow(shadow_origin, L2, 8.0);
 
         vec3 V = -current_rd;
         vec3 direct = evaluate_brdf(hit.normal, L1, V, color) * lc1 * s1
                     + evaluate_brdf(hit.normal, L2, V, color) * lc2 * s2
-                    + color * 0.04 * ao;
+                    + evaluate_brdf(hit.normal, L3, V, color) * lc3
+                    + color * 0.015 * ao;
 
         if (pc.emission > 0.0) {
-            direct += color * pc.emission * ao;
+            // only emit in deeply enclosed cavities
+            float enclosure = clamp(1.0 - ao, 0.0, 1.0);
+            // hard threshold: only emit when heavily occluded
+            float gate = smoothstep(0.15, 0.5, enclosure);
+            float iter_depth = clamp(float(hit.iters) / float(pc.max_iterations), 0.0, 1.0);
+            float emit_strength = gate * iter_depth * pc.emission;
+            vec3 emit_color = mix(vec3(1.5, 0.6, 0.1), vec3(8.0, 6.0, 4.0), clamp(gate, 0.0, 1.0));
+            direct += emit_color * emit_strength;
         }
 
         // fog
