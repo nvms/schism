@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DIR"
+
+RED="\033[31m"
+YELLOW="\033[33m"
+GREEN="\033[32m"
+DIM="\033[2m"
+RESET="\033[0m"
+BOLD="\033[1m"
+CYAN="\033[36m"
+
+has_issues=0
+
+echo -e "${BOLD}schism${RESET} ${DIM}audit${RESET}"
+echo ""
+
+# uncommitted changes
+uncommitted=$(git status --short 2>/dev/null || true)
+if [ -n "$uncommitted" ]; then
+  staged=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
+  unstaged=$(git diff --name-only 2>/dev/null | wc -l | tr -d ' ')
+  untracked=$(git ls-files --others --exclude-standard 2>/dev/null | wc -l | tr -d ' ')
+  parts=()
+  [ "$staged" -gt 0 ] && parts+=("${staged} staged")
+  [ "$unstaged" -gt 0 ] && parts+=("${unstaged} modified")
+  [ "$untracked" -gt 0 ] && parts+=("${untracked} untracked")
+  echo -e "  ${YELLOW}uncommitted: $(IFS=', '; echo "${parts[*]}")${RESET}"
+  has_issues=1
+else
+  echo -e "  ${GREEN}git clean${RESET}"
+fi
+
+# unpushed commits
+unpushed=$(git log --oneline @{u}..HEAD 2>/dev/null | wc -l | tr -d ' ')
+if [ "$unpushed" -gt 0 ]; then
+  echo -e "  ${YELLOW}${unpushed} unpushed commit(s)${RESET}"
+  has_issues=1
+else
+  echo -e "  ${GREEN}pushed${RESET}"
+fi
+
+# CI status
+ci_result=$(gh run list --limit 1 --json conclusion,status 2>/dev/null || echo "[]")
+ci_conclusion=$(echo "$ci_result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['conclusion'] if d else 'none')" 2>/dev/null || echo "none")
+ci_status=$(echo "$ci_result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['status'] if d else 'none')" 2>/dev/null || echo "none")
+
+if [ "$ci_status" = "in_progress" ] || [ "$ci_status" = "queued" ]; then
+  echo -e "  ${YELLOW}ci: ${ci_status}${RESET}"
+  has_issues=1
+elif [ "$ci_conclusion" = "failure" ]; then
+  echo -e "  ${RED}ci: failing${RESET}"
+  echo -e "  ${CYAN}gh run view --log-failed${RESET}"
+  has_issues=1
+elif [ "$ci_conclusion" = "success" ]; then
+  echo -e "  ${GREEN}ci: passing${RESET}"
+elif [ "$ci_conclusion" = "none" ]; then
+  echo -e "  ${DIM}ci: no runs${RESET}"
+fi
+
+# lockfile health (zig)
+if [ -f "build.zig.zon" ]; then
+  echo -e "  ${GREEN}build.zig.zon present${RESET}"
+else
+  echo -e "  ${YELLOW}missing build.zig.zon${RESET}"
+  has_issues=1
+fi
+
+# dependency freshness - check zig version
+zig_version=$(zig version 2>/dev/null || echo "not installed")
+echo -e "  ${DIM}zig: ${zig_version}${RESET}"
+
+echo ""
+exit $has_issues

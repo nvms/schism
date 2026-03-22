@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: master
+
+      - name: build
+        run: zig build
+
+      - name: test
+        run: zig build test
+        env:
+          SCHISM_SKIP_GPU: "1"
