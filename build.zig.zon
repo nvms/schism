@@ -1,6 +1,12 @@
 .{
     .name = .schism,
     .version = "0.1.0",
+    .dependencies = .{
+        .vulkan = .{
+            .url = "git+https://github.com/Snektron/vulkan-zig?ref=zig-0.15-compat#3ada9e2989bab70090a55f0f6fac19ea90d06357",
+            .hash = "vulkan-0.0.0-r7Ytx6FIAwD3QyrrJhvObO0YSZ6WEkMGSCPKbhM__HFd",
+        },
+    },
     .fingerprint = 0x6c63cbc201bdb8eb,
     .minimum_zig_version = "0.15.0",
     .paths = .{

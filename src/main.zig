@@ -6,6 +6,10 @@ const render = @import("render.zig");
 const png = @import("png.zig");
 const Seed = @import("seed.zig").Seed;
 
+const build_options = @import("build_options");
+const has_gpu = build_options.has_vulkan;
+const VulkanCompute = if (has_gpu) @import("vulkan_compute.zig").VulkanCompute else void;
+
 const Args = struct {
     fractal_type: fractals.FractalType = .mandelbulb,
     width: u32 = 1920,
@@ -14,6 +18,7 @@ const Args = struct {
     seed: ?Seed = null,
     output: []const u8 = "output.png",
     help: bool = false,
+    force_cpu: bool = false,
 };
 
 pub fn main() !void {
@@ -72,41 +77,14 @@ pub fn main() !void {
         .exposure = 1.8,
     };
 
-    const pixels = try std.heap.page_allocator.alloc(Vec3, @as(usize, args.width) * args.height);
+    const pixels = if (has_gpu and !args.force_cpu) blk: {
+        break :blk renderGPU(args, config, seed, stdout) catch |err| {
+            try stdout.print("gpu failed ({s}), falling back to cpu\n", .{@errorName(err)});
+            try stdout.flush();
+            break :blk try renderCPU(args, config, seed, stdout);
+        };
+    } else try renderCPU(args, config, seed, stdout);
     defer std.heap.page_allocator.free(pixels);
-
-    const num_threads = std.Thread.getCpuCount() catch 4;
-    try stdout.print("threads: {d}\n", .{num_threads});
-    try stdout.flush();
-
-    var rows_done = std.atomic.Value(u32).init(0);
-    var threads = try std.heap.page_allocator.alloc(std.Thread, num_threads);
-    defer std.heap.page_allocator.free(threads);
-
-    for (0..num_threads) |tid| {
-        threads[tid] = try std.Thread.spawn(.{}, renderWorker, .{
-            pixels,
-            config,
-            seed.value,
-            @as(u32, @intCast(tid)),
-            @as(u32, @intCast(num_threads)),
-            &rows_done,
-        });
-    }
-
-    // progress reporter
-    while (true) {
-        const done = rows_done.load(.acquire);
-        const pct = @as(f64, @floatFromInt(done)) / @as(f64, @floatFromInt(args.height)) * 100.0;
-        try stdout.print("\r{d:.0}%", .{pct});
-        try stdout.flush();
-        if (done >= args.height) break;
-        std.Thread.sleep(100 * std.time.ns_per_ms);
-    }
-
-    for (threads) |t| t.join();
-    try stdout.print("\r100%\n", .{});
-    try stdout.flush();
 
     render.applyBloom(pixels, args.width, args.height, 0.15, 0.8);
 
@@ -216,6 +194,57 @@ fn materialForFractal(fractal_type: fractals.FractalType) render.Material {
     };
 }
 
+fn renderGPU(args: Args, config: render.RenderConfig, seed: Seed, stdout: *std.Io.Writer) ![]Vec3 {
+    if (!has_gpu) return error.VulkanNotAvailable;
+
+    try stdout.print("backend: gpu (vulkan)\n", .{});
+    try stdout.flush();
+
+    var gpu = try VulkanCompute.init(args.width, args.height);
+    defer gpu.deinit();
+
+    try gpu.dispatch(config, @truncate(seed.value));
+    return try gpu.readPixels(args.width, args.height);
+}
+
+fn renderCPU(args: Args, config: render.RenderConfig, seed: Seed, stdout: *std.Io.Writer) ![]Vec3 {
+    const num_threads = std.Thread.getCpuCount() catch 4;
+    try stdout.print("backend: cpu ({d} threads)\n", .{num_threads});
+    try stdout.flush();
+
+    const pixels = try std.heap.page_allocator.alloc(Vec3, @as(usize, args.width) * args.height);
+
+    var rows_done = std.atomic.Value(u32).init(0);
+    const threads = try std.heap.page_allocator.alloc(std.Thread, num_threads);
+    defer std.heap.page_allocator.free(threads);
+
+    for (0..num_threads) |tid| {
+        threads[tid] = try std.Thread.spawn(.{}, renderWorker, .{
+            pixels,
+            config,
+            seed.value,
+            @as(u32, @intCast(tid)),
+            @as(u32, @intCast(num_threads)),
+            &rows_done,
+        });
+    }
+
+    while (true) {
+        const done = rows_done.load(.acquire);
+        const pct = @as(f64, @floatFromInt(done)) / @as(f64, @floatFromInt(args.height)) * 100.0;
+        try stdout.print("\r{d:.0}%", .{pct});
+        try stdout.flush();
+        if (done >= args.height) break;
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+    }
+
+    for (threads) |t| t.join();
+    try stdout.print("\r100%\n", .{});
+    try stdout.flush();
+
+    return pixels;
+}
+
 fn renderWorker(
     pixels: []Vec3,
     config: render.RenderConfig,
@@ -263,6 +292,8 @@ fn parseArgs() !Args {
             args.samples = try std.fmt.parseInt(u32, val, 10);
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
             args.output = iter.next() orelse return error.MissingArgument;
+        } else if (std.mem.eql(u8, arg, "--cpu")) {
+            args.force_cpu = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             args.help = true;
         }

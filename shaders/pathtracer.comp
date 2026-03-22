@@ -1,0 +1,484 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) buffer OutputBuffer {
+    vec4 pixels[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+    uint samples_per_pixel;
+    uint seed;
+    uint fractal_type;
+    uint max_iterations;
+    float power;
+    float bailout;
+    float fscale;
+    float offset_x;
+    float offset_y;
+    float offset_z;
+    float julia_cx;
+    float julia_cy;
+    float julia_cz;
+    float cam_pos_x;
+    float cam_pos_y;
+    float cam_pos_z;
+    float cam_fwd_x;
+    float cam_fwd_y;
+    float cam_fwd_z;
+    float cam_right_x;
+    float cam_right_y;
+    float cam_right_z;
+    float cam_up_x;
+    float cam_up_y;
+    float cam_up_z;
+    float cam_fov;
+    float cam_aspect;
+    float roughness;
+    float metallic;
+    float emission;
+    float exposure;
+    float fog_density;
+} pc;
+
+// --- RNG ---
+
+uint rng_state;
+
+uint pcg_hash(uint val) {
+    uint state = val * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float rand() {
+    rng_state = pcg_hash(rng_state);
+    return float(rng_state) / 4294967295.0;
+}
+
+// --- SDF results ---
+
+struct SDFResult {
+    float dist;
+    vec3 trap;
+    float min_orbit;
+    uint iters;
+};
+
+// --- Fractal SDFs ---
+
+SDFResult sdf_mandelbulb(vec3 p) {
+    vec3 z = p;
+    float dr = 1.0;
+    float r = 0.0;
+    float pw = pc.power;
+    float min_orbit = 1e10;
+    vec3 trap = vec3(1e10);
+    uint i = 0;
+
+    for (; i < pc.max_iterations; i++) {
+        r = length(z);
+        if (r > pc.bailout) break;
+
+        trap = min(trap, abs(z));
+        min_orbit = min(min_orbit, r);
+
+        float theta = acos(clamp(z.z / r, -1.0, 1.0));
+        float phi = atan(z.y, z.x);
+        dr = pow(r, pw - 1.0) * pw * dr + 1.0;
+        float zr = pow(r, pw);
+        theta *= pw;
+        phi *= pw;
+        z = zr * vec3(sin(theta) * cos(phi), sin(phi) * sin(theta), cos(theta)) + p;
+    }
+    return SDFResult(0.5 * log(r) * r / dr, trap, min_orbit, i);
+}
+
+SDFResult sdf_menger(vec3 p) {
+    vec3 z = p;
+    uint iters = min(pc.max_iterations, 20u);
+    float min_orbit = 1e10;
+    vec3 trap = vec3(1e10);
+    float s = pc.fscale;
+    vec3 offset = vec3(pc.offset_x, pc.offset_y, pc.offset_z);
+    uint i = 0;
+
+    for (; i < iters; i++) {
+        z = abs(z);
+        if (z.x < z.y) z.xy = z.yx;
+        if (z.x < z.z) z.xz = z.zx;
+        if (z.y < z.z) z.yz = z.zy;
+
+        trap = min(trap, abs(z));
+        min_orbit = min(min_orbit, length(z));
+
+        z = z * s - offset * (s - 1.0);
+        if (z.z < -0.5 * offset.z * (s - 1.0))
+            z.z += offset.z * (s - 1.0);
+    }
+    return SDFResult(length(z) * pow(s, -float(iters)), trap, min_orbit, i);
+}
+
+SDFResult sdf_sierpinski(vec3 p) {
+    vec3 z = p;
+    uint iters = min(pc.max_iterations, 20u);
+    float min_orbit = 1e10;
+    vec3 trap = vec3(1e10);
+    float s = pc.fscale;
+    vec3 offset = vec3(pc.offset_x, pc.offset_y, pc.offset_z);
+    uint i = 0;
+
+    for (; i < iters; i++) {
+        if (z.x + z.y < 0) z.xy = -z.yx;
+        if (z.x + z.z < 0) z.xz = -z.zx;
+        if (z.y + z.z < 0) z.yz = -z.zy;
+
+        trap = min(trap, abs(z));
+        min_orbit = min(min_orbit, length(z));
+        z = z * s - offset * (s - 1.0);
+    }
+    return SDFResult((length(z) - 1.5) * pow(s, -float(iters)), trap, min_orbit, i);
+}
+
+SDFResult sdf_julia(vec3 p) {
+    vec3 z = p;
+    float r = 0.0;
+    float dr = 1.0;
+    vec3 c = vec3(pc.julia_cx, pc.julia_cy, pc.julia_cz);
+    float min_orbit = 1e10;
+    vec3 trap = vec3(1e10);
+    uint i = 0;
+
+    for (; i < pc.max_iterations; i++) {
+        r = length(z);
+        if (r > pc.bailout) break;
+
+        trap = min(trap, abs(z));
+        min_orbit = min(min_orbit, r);
+
+        float new_x = z.x * z.x - z.y * z.y - z.z * z.z;
+        float new_y = 2.0 * z.x * z.y;
+        float new_z = 2.0 * z.x * z.z;
+        dr = 2.0 * r * dr + 1.0;
+        z = vec3(new_x, new_y, new_z) + c;
+    }
+    return SDFResult(0.5 * log(r) * r / dr, trap, min_orbit, i);
+}
+
+SDFResult sdf_kleinian(vec3 p) {
+    vec3 z = p;
+    float de = 1.0;
+    vec3 box_size = vec3(pc.offset_x, pc.offset_y, pc.offset_z);
+    float min_orbit = 1e10;
+    vec3 trap = vec3(1e10);
+    uint i = 0;
+
+    for (; i < pc.max_iterations; i++) {
+        z.x -= box_size.x * round(z.x / box_size.x);
+        z.z -= box_size.z * round(z.z / box_size.z);
+
+        trap = min(trap, abs(z));
+        min_orbit = min(min_orbit, length(z));
+
+        float r2 = dot(z, z);
+        if (r2 < 0.001) break;
+        float k = max(1.0 / r2, 1.0);
+        z *= k;
+        de *= k;
+    }
+    return SDFResult(length(z) / de, trap, min_orbit, i);
+}
+
+SDFResult sdf_ifs(vec3 p) {
+    vec3 z = p;
+    float s = pc.fscale;
+    uint iters = min(pc.max_iterations, 20u);
+    vec3 offset = vec3(pc.offset_x, pc.offset_y, pc.offset_z);
+    float min_orbit = 1e10;
+    vec3 trap = vec3(1e10);
+    uint i = 0;
+
+    for (; i < iters; i++) {
+        z = abs(z);
+        if (z.x - z.y < 0) z.xy = z.yx;
+        if (z.x - z.z < 0) z.xz = z.zx;
+        if (z.y - z.z < 0) z.yz = z.zy;
+
+        trap = min(trap, abs(z));
+        min_orbit = min(min_orbit, length(z));
+        z = z * s - offset * (s - 1.0);
+    }
+    return SDFResult(length(z) * pow(s, -float(iters)), trap, min_orbit, i);
+}
+
+SDFResult sdf(vec3 p) {
+    switch (pc.fractal_type) {
+        case 0: return sdf_mandelbulb(p);
+        case 1: return sdf_menger(p);
+        case 2: return sdf_sierpinski(p);
+        case 3: return sdf_julia(p);
+        case 4: return sdf_kleinian(p);
+        case 5: return sdf_ifs(p);
+        default: return sdf_mandelbulb(p);
+    }
+}
+
+float sdf_dist(vec3 p) {
+    return sdf(p).dist;
+}
+
+// --- Normal estimation ---
+
+vec3 estimate_normal(vec3 p) {
+    float e = 0.0001;
+    return normalize(vec3(
+        sdf_dist(p + vec3(e, 0, 0)) - sdf_dist(p - vec3(e, 0, 0)),
+        sdf_dist(p + vec3(0, e, 0)) - sdf_dist(p - vec3(0, e, 0)),
+        sdf_dist(p + vec3(0, 0, e)) - sdf_dist(p - vec3(0, 0, e))
+    ));
+}
+
+// --- Soft shadows ---
+
+float soft_shadow(vec3 origin, vec3 dir, float k) {
+    float result = 1.0;
+    float t = 0.01;
+    for (int i = 0; i < 64; i++) {
+        float d = sdf_dist(origin + dir * t);
+        if (d < 0.0001) return 0.0;
+        result = min(result, k * d / t);
+        t += clamp(d, 0.001, 0.5);
+        if (t > 20.0) break;
+    }
+    return clamp(result, 0.0, 1.0);
+}
+
+// --- Ambient occlusion ---
+
+float ambient_occlusion(vec3 p, vec3 n) {
+    float ao = 0.0;
+    float s = 1.0;
+    for (int i = 1; i <= 5; i++) {
+        float step = 0.02 * float(i);
+        float d = sdf_dist(p + n * step);
+        ao += (step - d) * s;
+        s *= 0.5;
+    }
+    return clamp(1.0 - 3.0 * ao, 0.0, 1.0);
+}
+
+// --- Ray marching ---
+
+struct HitResult {
+    float dist;
+    vec3 pos;
+    vec3 normal;
+    uint steps;
+    vec3 trap;
+    float min_orbit;
+    uint iters;
+    bool hit;
+};
+
+HitResult raymarch(vec3 ro, vec3 rd) {
+    float t = 0.001;
+    HitResult result;
+    result.hit = false;
+
+    for (uint i = 0; i < 512; i++) {
+        vec3 p = ro + rd * t;
+        SDFResult sr = sdf(p);
+        float d = sr.dist;
+
+        if (d < 0.00005 * t) {
+            result.hit = true;
+            result.dist = t;
+            result.pos = p;
+            result.normal = estimate_normal(p);
+            result.steps = i;
+            result.trap = sr.trap;
+            result.min_orbit = sr.min_orbit;
+            result.iters = sr.iters;
+            return result;
+        }
+
+        t += d * 0.8;
+        if (t > 50.0) break;
+    }
+    return result;
+}
+
+// --- BRDF ---
+
+vec3 orbit_trap_color(vec3 trap, float min_orbit, uint iters) {
+    float t = clamp(trap.x * 2.0, 0.0, 1.0);
+    float s = clamp(trap.y * 2.0, 0.0, 1.0);
+    float q = clamp(trap.z * 2.0, 0.0, 1.0);
+    float on = clamp(min_orbit / 2.0, 0.0, 1.0);
+    float itn = clamp(float(iters) / 50.0, 0.0, 1.0);
+
+    float r = clamp(0.5 + 0.5 * sin(t * 5.0 + on * 3.0), 0.0, 1.0);
+    float g = clamp(0.5 + 0.5 * sin(s * 4.0 + itn * 2.5 + 1.0), 0.0, 1.0);
+    float b = clamp(0.5 + 0.5 * sin(q * 3.0 + on * 4.0 + 2.0), 0.0, 1.0);
+    return vec3(r * 0.9, g * 0.8, b * 0.85);
+}
+
+vec3 evaluate_brdf(vec3 N, vec3 L, vec3 V, vec3 albedo) {
+    float NdotL = max(dot(N, L), 0.0);
+    if (NdotL <= 0.0) return vec3(0.0);
+
+    vec3 H = normalize(L + V);
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotV = max(dot(N, V), 0.001);
+    float VdotH = max(dot(V, H), 0.0);
+
+    // Fresnel-Schlick
+    vec3 F0 = mix(vec3(0.04), albedo, pc.metallic);
+    vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+
+    // GGX
+    float a = pc.roughness * pc.roughness;
+    float a2 = a * a;
+    float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    float D = a2 / (3.14159265 * denom * denom + 0.0001);
+
+    // Smith
+    float k = (pc.roughness + 1.0) * (pc.roughness + 1.0) / 8.0;
+    float G = (NdotV / (NdotV * (1.0 - k) + k)) * (NdotL / (NdotL * (1.0 - k) + k));
+
+    vec3 spec = F * D * G / (4.0 * NdotV * NdotL + 0.001);
+    vec3 kd = (1.0 - F) * (1.0 - pc.metallic);
+    vec3 diffuse = kd * albedo / 3.14159265;
+
+    return (diffuse + spec) * NdotL;
+}
+
+// --- Random hemisphere ---
+
+vec3 random_hemisphere(vec3 N) {
+    float z = rand();
+    float phi = 6.28318530 * rand();
+    float st = sqrt(1.0 - z * z);
+    vec3 local = vec3(st * cos(phi), st * sin(phi), z);
+
+    vec3 helper = abs(N.x) < 0.9 ? vec3(1, 0, 0) : vec3(0, 1, 0);
+    vec3 T = normalize(cross(N, helper));
+    vec3 B = cross(N, T);
+    return normalize(T * local.x + B * local.y + N * local.z);
+}
+
+// --- Path tracing ---
+
+vec3 trace_path(vec3 ro, vec3 rd) {
+    vec3 throughput = vec3(1.0);
+    vec3 result = vec3(0.0);
+
+    vec3 current_ro = ro;
+    vec3 current_rd = rd;
+
+    for (int bounce = 0; bounce < 6; bounce++) {
+        HitResult hit = raymarch(current_ro, current_rd);
+
+        if (!hit.hit) {
+            // dark environment
+            float t = max(current_rd.y * 0.5 + 0.5, 0.0);
+            result += throughput * vec3(0.001, 0.001, 0.002) * t;
+            break;
+        }
+
+        vec3 color = orbit_trap_color(hit.trap, hit.min_orbit, hit.iters);
+        float ao = ambient_occlusion(hit.pos, hit.normal);
+
+        vec3 L1 = normalize(vec3(0.6, 0.8, -0.3));
+        vec3 L2 = normalize(vec3(-0.5, 0.3, 0.7));
+        vec3 lc1 = vec3(1.2, 1.0, 0.8);
+        vec3 lc2 = vec3(0.3, 0.4, 0.6);
+
+        vec3 shadow_origin = hit.pos + hit.normal * 0.002;
+        float s1 = soft_shadow(shadow_origin, L1, 12.0);
+        float s2 = soft_shadow(shadow_origin, L2, 12.0);
+
+        vec3 V = -current_rd;
+        vec3 direct = evaluate_brdf(hit.normal, L1, V, color) * lc1 * s1
+                    + evaluate_brdf(hit.normal, L2, V, color) * lc2 * s2
+                    + color * 0.04 * ao;
+
+        if (pc.emission > 0.0) {
+            direct += color * pc.emission * ao;
+        }
+
+        // fog
+        float fog = exp(-pc.fog_density * hit.dist);
+        direct *= fog;
+
+        result += throughput * direct;
+
+        if (bounce >= 5) break;
+
+        // russian roulette
+        if (bounce > 2) {
+            float p = min(max(throughput.x, max(throughput.y, throughput.z)), 0.95);
+            if (rand() > p) break;
+            throughput /= p;
+        }
+
+        current_rd = random_hemisphere(hit.normal);
+        current_ro = shadow_origin;
+        throughput *= color * 0.5;
+    }
+
+    return result;
+}
+
+// --- ACES tonemapping ---
+
+vec3 aces_tonemap(vec3 x) {
+    float a = 2.51;
+    float b = 0.03;
+    float c = 2.43;
+    float d = 0.59;
+    float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+// --- Main ---
+
+void main() {
+    uvec2 gid = gl_GlobalInvocationID.xy;
+    if (gid.x >= pc.width || gid.y >= pc.height) return;
+
+    uint pixel_idx = gid.y * pc.width + gid.x;
+    rng_state = pcg_hash(pixel_idx * 1973u + pc.seed * 9277u + 6271u);
+
+    vec3 cam_pos = vec3(pc.cam_pos_x, pc.cam_pos_y, pc.cam_pos_z);
+    vec3 cam_fwd = vec3(pc.cam_fwd_x, pc.cam_fwd_y, pc.cam_fwd_z);
+    vec3 cam_right = vec3(pc.cam_right_x, pc.cam_right_y, pc.cam_right_z);
+    vec3 cam_up = vec3(pc.cam_up_x, pc.cam_up_y, pc.cam_up_z);
+
+    float half_h = tan(pc.cam_fov / 2.0);
+    float half_w = half_h * pc.cam_aspect;
+
+    vec3 accum = vec3(0.0);
+
+    for (uint s = 0; s < pc.samples_per_pixel; s++) {
+        float jx = rand();
+        float jy = rand();
+        float u = (float(gid.x) + jx) / float(pc.width);
+        float v = 1.0 - (float(gid.y) + jy) / float(pc.height);
+
+        float x = (2.0 * u - 1.0) * half_w;
+        float y = (2.0 * v - 1.0) * half_h;
+
+        vec3 dir = normalize(cam_fwd + cam_right * x + cam_up * y);
+        accum += trace_path(cam_pos, dir);
+    }
+
+    vec3 color = accum / float(pc.samples_per_pixel);
+    color *= pc.exposure;
+    color = aces_tonemap(color);
+    color = pow(color, vec3(1.0 / 2.2));
+
+    pixels[pixel_idx] = vec4(color, 1.0);
+}
