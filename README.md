@@ -2,11 +2,8 @@
 
 Spectral fractal path tracer. Renders 3D fractal geometry using signed distance fields and physically-based path tracing with Vulkan compute shaders.
 
-![Mandelbulb power 12](renders/mandelbulb_p12.png)
-`schism --fractal mandelbulb --power 12 --seed a4f29c`
-
-![Mandelbulb power 5](renders/mandelbulb_p5.png)
-`schism --fractal mandelbulb --power 5 --seed 3c7a1e`
+![Mandelbulb](renders/mandelbulb_hero.png)
+`schism --fractal mandelbulb --power 9 --cam-dist 1.7 --cam-height 0.5 --seed 1a2b3c`
 
 ## How it works
 
