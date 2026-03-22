@@ -19,6 +19,9 @@ const Args = struct {
     output: []const u8 = "output.png",
     help: bool = false,
     force_cpu: bool = false,
+    power: ?f64 = null,
+    cam_dist: ?f64 = null,
+    cam_height: ?f64 = null,
 };
 
 pub fn main() !void {
@@ -62,8 +65,29 @@ pub fn main() !void {
     try stdout.print("samples: {d}\n", .{args.samples});
     try stdout.flush();
 
-    const cam_config = cameraForFractal(args.fractal_type, args.width, args.height);
-    const frac_params = fractalParams(args.fractal_type);
+    var cam_config = cameraForFractal(args.fractal_type, args.width, args.height);
+    var frac_params = fractalParams(args.fractal_type);
+
+    if (args.power) |p| frac_params.power = p;
+    if (args.cam_dist) |d| {
+        const dir = cam_config.position.normalize();
+        cam_config = Camera.init(.{
+            .position = dir.scale(d),
+            .look_at = Vec3.zero,
+            .fov_degrees = cam_config.fov * 180.0 / std.math.pi,
+            .aspect = cam_config.aspect,
+            .aperture = 0.01,
+        });
+    }
+    if (args.cam_height) |h| {
+        cam_config = Camera.init(.{
+            .position = Vec3.init(cam_config.position.x, h, cam_config.position.z),
+            .look_at = Vec3.zero,
+            .fov_degrees = cam_config.fov * 180.0 / std.math.pi,
+            .aspect = cam_config.aspect,
+            .aperture = 0.01,
+        });
+    }
 
     const config = render.RenderConfig{
         .width = args.width,
@@ -292,6 +316,15 @@ fn parseArgs() !Args {
             args.samples = try std.fmt.parseInt(u32, val, 10);
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
             args.output = iter.next() orelse return error.MissingArgument;
+        } else if (std.mem.eql(u8, arg, "--power")) {
+            const val = iter.next() orelse return error.MissingArgument;
+            args.power = try std.fmt.parseFloat(f64, val);
+        } else if (std.mem.eql(u8, arg, "--cam-dist")) {
+            const val = iter.next() orelse return error.MissingArgument;
+            args.cam_dist = try std.fmt.parseFloat(f64, val);
+        } else if (std.mem.eql(u8, arg, "--cam-height")) {
+            const val = iter.next() orelse return error.MissingArgument;
+            args.cam_height = try std.fmt.parseFloat(f64, val);
         } else if (std.mem.eql(u8, arg, "--cpu")) {
             args.force_cpu = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {

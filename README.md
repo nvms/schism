@@ -1,30 +1,37 @@
 # schism
 
-Spectral fractal path tracer. Renders 3D fractal geometry using signed distance fields and physically-based spectral path tracing, producing phenomena impossible in traditional RGB renderers: continuous light dispersion through recursive geometry, thin-film interference on fractal surfaces, wavelength-dependent scattering through infinite detail.
+Spectral fractal path tracer. Renders 3D fractal geometry using signed distance fields and physically-based path tracing with Vulkan compute shaders.
 
-Built with Zig and Vulkan compute shaders.
+![Mandelbulb power 12](renders/mandelbulb_p12.png)
+`schism --fractal mandelbulb --power 12 --seed a4f29c`
 
 ## How it works
 
-Instead of tracing red, green, and blue channels independently, schism simulates light at individual wavelengths across the visible spectrum (380-780nm). When light passes through fractal geometry with wavelength-dependent refraction, it splits into continuous rainbows - not the crude 3-band artifacts RGB renderers produce. Combined with SDF raymarching through mathematically infinite fractal detail and physically-based path tracing for realistic light transport, the results are unlike anything conventional renderers can produce.
+SDF raymarching through mathematically infinite fractal detail, combined with physically-based path tracing for realistic light transport. The rendering pipeline runs entirely on the GPU via a single Vulkan compute dispatch - no graphics pipeline, no render passes. A multi-threaded CPU fallback is used when no GPU is available.
+
+The path tracer implements GGX microfacet BRDF with Fresnel-Schlick reflectance, soft shadow rays, SDF-based ambient occlusion, orbit trap coloring, up to 6 light bounces with russian roulette termination, and ACES filmic tonemapping.
 
 ## Usage
 
 ```
-# render a mandelbulb at 4K with a specific seed
-schism render --fractal mandelbulb --seed a4f29c --width 3840 --height 2160 -o render.exr
+# render a mandelbulb at 1280x720
+schism --fractal mandelbulb --width 1280 --height 720 -o render.png
 
-# random seed (printed to stdout so you can reproduce it)
-schism render --fractal menger -o render.png
+# specific seed for reproducibility (random if omitted)
+schism --fractal menger --seed 7b3e1d -o render.png
 # seed: 7b3e1d
 
-# interactive exploration mode
-schism explore --fractal julia
+# vary the fractal power for different shapes
+schism --fractal mandelbulb --power 4 -o smooth.png
+schism --fractal mandelbulb --power 12 -o detailed.png
+
+# force CPU rendering
+schism --fractal julia --cpu -o render.png
 ```
 
 ## Seed system
 
-Every render is deterministic. Pass `--seed <hex>` to reproduce an exact image. Without a seed, a random one is generated and printed to stdout. The seed is also embedded in EXR metadata, so every render is traceable back to its parameters.
+Every render is deterministic. Pass `--seed <hex>` to reproduce an exact image. Without a seed, a random one is generated and printed to stdout.
 
 Same seed + same parameters = identical output, every time.
 
@@ -39,11 +46,18 @@ Same seed + same parameters = identical output, every time.
 
 ## Building
 
-Requires Zig (master or latest stable) and Vulkan SDK.
+Requires Zig 0.15+ and Vulkan SDK (vulkan-headers, vulkan-loader, glslang). On macOS, also install molten-vk.
 
 ```
+brew install vulkan-headers vulkan-loader molten-vk glslang  # macOS
 zig build
 zig build test
+```
+
+Build without Vulkan (CPU-only):
+
+```
+zig build -Dskip-vulkan
 ```
 
 ## About
