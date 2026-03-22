@@ -15,12 +15,10 @@ jobs:
       - name: install zig
         uses: mlugg/setup-zig@v2
         with:
-          version: master
+          version: 0.15.1
 
       - name: build
-        run: zig build
+        run: zig build -Dskip-vulkan
 
       - name: test
         run: zig build test
-        env:
-          SCHISM_SKIP_GPU: "1"
