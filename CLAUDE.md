@@ -16,9 +16,20 @@ the rendering pipeline runs entirely on the GPU via Vulkan compute shaders. Zig 
 - spectral path tracing with hero wavelength sampling for physically accurate light transport
 - deterministic output: same seed always produces the same render. no seed = random seed printed to stdout so you can reproduce anything you liked
 - Vulkan compute backend - no graphics pipeline, no render passes, just compute dispatches
-- headless CLI rendering: `schism render --fractal mandelbulb --seed a4f29c --width 3840 --height 2160 -o output.exr`
-- windowed interactive mode for exploring and framing shots
-- post-processing: tonemapping (ACES, etc.), chromatic aberration, bloom, gamma correction
+- headless CLI rendering: `schism --fractal mandelbulb --seed a4f29c --width 3840 --height 2160 -o output.png`
+- post-processing: ACES tonemapping, bloom, gamma correction
+- multi-threaded CPU fallback when no GPU available
+
+## reference
+
+the quality bar is https://github.com/adam-pa/FPT - a Python/GLSL SDF path tracer. reference images are saved locally in `reference/` - look at them to understand the target quality:
+
+- `reference/fpt_kleinian_orange.jpg` - emissive glowing light inside fractal cavities, deep shadows, volumetric feel
+- `reference/fpt_menger_purple.png` - chromatic aberration, shallow DOF, incredible surface detail, multi-colored specular
+- `reference/fpt_mandelbulb_mono.png` - studio lighting, extremely high iteration organic detail, soft shadows
+- `reference/fpt_kleinian_white.png` - bright ambient lighting, incredible recursive detail at many levels
+
+schism should match or exceed that quality. key techniques from FPT that we implement: GGX BRDF with Fresnel, soft shadows, orbit trap coloring, ACES tonemapping, high iteration counts for surface detail. things we should still add: chromatic aberration, progressive accumulation for interactive mode, HDRI environment lighting, better per-fractal camera angles and material tuning.
 
 ## what this project does NOT do
 
@@ -31,49 +42,60 @@ the rendering pipeline runs entirely on the GPU via Vulkan compute shaders. Zig 
 
 ```
 src/
-  main.zig          - entry point, CLI parsing, mode dispatch
-  vulkan/           - Vulkan initialization, device selection, pipeline setup
-    instance.zig
-    device.zig
-    pipeline.zig
-    buffer.zig
-  render/           - rendering orchestration
-    engine.zig      - compute dispatch, accumulation, progressive refinement
-    camera.zig      - camera model, DOF, lens simulation
-    spectrum.zig    - wavelength sampling, spectral-to-RGB conversion (CIE XYZ)
-  fractals/         - SDF definitions
-    mandelbulb.zig
-    menger.zig
-    sierpinski.zig
-    julia.zig
-    kleinian.zig
-    ifs.zig
-  output/           - image output (PNG, EXR)
-    png.zig
-    exr.zig
+  main.zig              - entry point, CLI parsing, fractal/camera/material configs, render dispatch
+  math.zig              - Vec3, Ray, clamp (all pure math, fully tested)
+  spectrum.zig          - CIE XYZ color matching, spectral-to-RGB, Cauchy/Sellmeier dispersion
+  fractals.zig          - SDF definitions for all 6 fractal types, orbit traps, soft shadows, AO
+  camera.zig            - camera model with DOF via lens sampling
+  seed.zig              - deterministic hex seed system, PCG RNG
+  render.zig            - CPU path tracer: raymarch, BRDF, orbit trap coloring, ACES tonemap, bloom
+  vulkan_compute.zig    - Vulkan compute backend: instance/device/pipeline setup, dispatch, readback
+  png.zig               - minimal PNG writer (zlib stored blocks, no compression dependency)
 shaders/
-  pathtracer.comp   - main compute shader: raymarching + spectral path tracing + BRDF
-  postprocess.comp  - tonemapping, bloom, chromatic aberration
-  accumulate.comp   - progressive sample accumulation
+  pathtracer.comp       - GLSL compute shader: full path tracer (same logic as CPU but on GPU)
 build.zig
 build.zig.zon
 ```
+
+### dual backend
+
+the renderer has two backends that produce identical output:
+- **GPU (default)**: Vulkan compute via vulkan-zig. the entire path tracer runs in a single compute shader dispatch. ~60x faster than CPU
+- **CPU (fallback)**: multi-threaded Zig. automatically used if Vulkan init fails, or forced with `--cpu`
+
+on macOS, MoltenVK is used via the portability enumeration extension. the instance creation must include `VK_KHR_portability_enumeration` and the `enumerate_portability_bit_khr` flag or MoltenVK will be invisible
+
+### rendering pipeline
+
+both backends implement the same pipeline:
+1. SDF raymarching (512 max steps, distance-adaptive epsilon)
+2. orbit trap extraction for coloring
+3. two-light setup with soft shadow rays (64 steps each)
+4. SDF-based ambient occlusion (5 samples)
+5. GGX microfacet BRDF with Fresnel-Schlick
+6. up to 6 bounces with russian roulette termination
+7. ACES filmic tonemapping + gamma correction
+8. bloom post-processing (CPU-side, applied to both backends)
 
 ## seed system
 
 deterministic rendering via seed:
 
-- the seed controls: fractal parameter variations, camera jitter sequences, wavelength hero sampling, random bounce directions
+- the seed controls: RNG state for jitter, bounce directions, russian roulette
 - `--seed <hex>` reproduces an exact render
 - no seed flag = random seed, printed to stdout: `seed: a4f29c`
-- the seed is embedded in EXR metadata so renders are always traceable
+- GPU backend: seed passed via push constants, per-pixel RNG seeded from pixel index + seed
+- CPU backend: per-row RNG seeded from base seed + row index
 
 ## spectral rendering details
 
-- hero wavelength sampling (Wilkie et al., EGSR 2014): one hero wavelength per path, additional wavelengths at equal intervals across the visible range
-- spectral material model: index of refraction varies by wavelength (Cauchy/Sellmeier dispersion), enabling physically accurate prism effects through fractal geometry
-- CIE 1931 XYZ color matching functions for spectral-to-display conversion
-- spectral power distributions for light sources (not just color temperature)
+the CPU backend has full spectral infrastructure (spectrum.zig):
+- hero wavelength sampling: one hero wavelength per path, 4 wavelengths at equal intervals across 380-780nm
+- CIE 1931 XYZ color matching functions (Wyman 2013 piecewise gaussian approximation)
+- Cauchy and Sellmeier dispersion models for wavelength-dependent IOR
+- spectral-to-sRGB conversion via XYZ intermediate
+
+the GPU backend currently renders in RGB (not spectral). migrating spectral rendering to the compute shader is a future task - requires passing wavelength data through push constants and implementing the CIE CMFs in GLSL
 
 ## workflow
 
@@ -89,7 +111,10 @@ at the end of every session:
 
 ## standards
 
-- zig master or latest stable. target Vulkan 1.2+
+- zig 0.15.x (not master - the APIs differ significantly). target Vulkan 1.2+
+- vulkan-zig dependency uses the `zig-0.15-compat` branch, not master
+- build requires `glslangValidator` (brew install glslang) for SPIR-V compilation
+- build requires vulkan-headers, vulkan-loader, molten-vk on macOS (brew install)
 - test with `zig build test`. tests must pass before pushing
 - short lowercase commit messages, no co-author lines. initial commit is just the version number (e.g. `0.1.0`)
 - code comments are casual, no capitalization (except proper nouns), no ending punctuation. only comment when code can't speak for itself
