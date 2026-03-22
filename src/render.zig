@@ -66,6 +66,8 @@ pub const RenderConfig = struct {
     fog_density: f64 = 0.03,
     fog_color: Vec3 = Vec3.init(0.0, 0.0, 0.0),
     exposure: f64 = 1.5,
+    color_phase1: f64 = 0.0,
+    color_phase2: f64 = 0.0,
 };
 
 pub fn tracePixel(
@@ -117,7 +119,7 @@ fn tracePath(
         };
 
         // surface color from orbit trap
-        const surface_color = orbitTrapColor(hit.trap, hit.min_orbit, hit.iterations, config.fractal);
+        const surface_color = orbitTrapColor(hit.trap, hit.min_orbit, hit.iterations, config);
 
         // ambient occlusion
         const ao = fractals.ambientOcclusion(hit.position, hit.normal, config.fractal);
@@ -179,18 +181,19 @@ fn tracePath(
     return result;
 }
 
-fn orbitTrapColor(trap: Vec3, min_orbit: f64, iterations: u32, params: fractals.FractalParams) Vec3 {
-    _ = params;
+fn orbitTrapColor(trap: Vec3, min_orbit: f64, iterations: u32, config: RenderConfig) Vec3 {
     const t = m.clamp(trap.x * 2.0, 0.0, 1.0);
     const s = m.clamp(trap.y * 2.0, 0.0, 1.0);
     const q = m.clamp(trap.z * 2.0, 0.0, 1.0);
     const orbit_norm = m.clamp(min_orbit / 2.0, 0.0, 1.0);
     const iter_norm = m.clamp(@as(f64, @floatFromInt(iterations)) / 50.0, 0.0, 1.0);
 
-    // rich coloring using orbit data
-    const r = m.clamp(0.5 + 0.5 * @sin(t * 5.0 + orbit_norm * 3.0), 0.0, 1.0);
-    const g = m.clamp(0.5 + 0.5 * @sin(s * 4.0 + iter_norm * 2.5 + 1.0), 0.0, 1.0);
-    const b = m.clamp(0.5 + 0.5 * @sin(q * 3.0 + orbit_norm * 4.0 + 2.0), 0.0, 1.0);
+    const p1 = config.color_phase1;
+    const p2 = config.color_phase2;
+
+    const r = m.clamp(0.5 + 0.5 * @sin(t * 5.0 + orbit_norm * 3.0 + p1), 0.0, 1.0);
+    const g = m.clamp(0.5 + 0.5 * @sin(s * 4.0 + iter_norm * 2.5 + p2), 0.0, 1.0);
+    const b = m.clamp(0.5 + 0.5 * @sin(q * 3.0 + orbit_norm * 4.0 + p1 + p2), 0.0, 1.0);
 
     return Vec3.init(r * 0.9, g * 0.8, b * 0.85);
 }

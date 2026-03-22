@@ -41,6 +41,8 @@ layout(push_constant) uniform PushConstants {
     float emission;
     float exposure;
     float fog_density;
+    float color_phase1;
+    float color_phase2;
 } pc;
 
 // --- RNG ---
@@ -319,9 +321,13 @@ vec3 orbit_trap_color(vec3 trap, float min_orbit, uint iters) {
     float on = clamp(min_orbit / 2.0, 0.0, 1.0);
     float itn = clamp(float(iters) / 50.0, 0.0, 1.0);
 
-    float r = clamp(0.5 + 0.5 * sin(t * 5.0 + on * 3.0), 0.0, 1.0);
-    float g = clamp(0.5 + 0.5 * sin(s * 4.0 + itn * 2.5 + 1.0), 0.0, 1.0);
-    float b = clamp(0.5 + 0.5 * sin(q * 3.0 + on * 4.0 + 2.0), 0.0, 1.0);
+    // seed-derived phase offsets for unique palettes
+    float p1 = pc.color_phase1;
+    float p2 = pc.color_phase2;
+
+    float r = clamp(0.5 + 0.5 * sin(t * 5.0 + on * 3.0 + p1), 0.0, 1.0);
+    float g = clamp(0.5 + 0.5 * sin(s * 4.0 + itn * 2.5 + p2), 0.0, 1.0);
+    float b = clamp(0.5 + 0.5 * sin(q * 3.0 + on * 4.0 + p1 + p2), 0.0, 1.0);
     return vec3(r * 0.9, g * 0.8, b * 0.85);
 }
 

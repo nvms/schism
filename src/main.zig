@@ -99,6 +99,8 @@ pub fn main() !void {
         .fog_density = 0.02,
         .fog_color = Vec3.init(0.0, 0.0, 0.0),
         .exposure = 1.8,
+        .color_phase1 = seedToPhase(seed.value, 0),
+        .color_phase2 = seedToPhase(seed.value, 1),
     };
 
     const pixels = if (has_gpu and !args.force_cpu) blk: {
@@ -291,6 +293,14 @@ fn renderWorker(
         }
         _ = rows_done.fetchAdd(1, .release);
     }
+}
+
+fn seedToPhase(seed_val: u64, offset: u64) f64 {
+    var h: u32 = @truncate(seed_val +% offset *% 2654435761);
+    h ^= h >> 16;
+    h *%= 0x45d9f3b;
+    h ^= h >> 16;
+    return @as(f64, @floatFromInt(h % 628)) / 100.0;
 }
 
 fn parseArgs() !Args {

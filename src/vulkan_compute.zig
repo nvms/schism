@@ -39,8 +39,8 @@ const PushConstants = extern struct {
     emission: f32,
     exposure: f32,
     fog_density: f32,
-    _pad0: f32 = 0,
-    _pad1: f32 = 0,
+    color_phase1: f32 = 0,
+    color_phase2: f32 = 0,
 };
 
 extern fn vkGetInstanceProcAddr(instance: vk.Instance, p_name: [*:0]const u8) ?*const fn () callconv(.c) void;
@@ -352,7 +352,17 @@ fn buildPushConstants(config: render.RenderConfig, seed_value: u32) PushConstant
         .emission = @floatCast(config.material.emission),
         .exposure = @floatCast(config.exposure),
         .fog_density = @floatCast(config.fog_density),
+        .color_phase1 = seedToPhase(seed_value, 0),
+        .color_phase2 = seedToPhase(seed_value, 1),
     };
+}
+
+fn seedToPhase(seed: u32, offset: u32) f32 {
+    var h = seed +% offset *% 2654435761;
+    h ^= h >> 16;
+    h *%= 0x45d9f3b;
+    h ^= h >> 16;
+    return @as(f32, @floatFromInt(h % 628)) / 100.0;
 }
 
 fn findMemoryType(
