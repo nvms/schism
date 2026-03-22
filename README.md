@@ -5,6 +5,9 @@ Spectral fractal path tracer. Renders 3D fractal geometry using signed distance 
 ![Mandelbulb power 12](renders/mandelbulb_p12.png)
 `schism --fractal mandelbulb --power 12 --seed a4f29c`
 
+![Mandelbulb power 5](renders/mandelbulb_p5.png)
+`schism --fractal mandelbulb --power 5 --seed 3c7a1e`
+
 ## How it works
 
 SDF raymarching through mathematically infinite fractal detail, combined with physically-based path tracing for realistic light transport. The rendering pipeline runs entirely on the GPU via a single Vulkan compute dispatch - no graphics pipeline, no render passes. A multi-threaded CPU fallback is used when no GPU is available.
